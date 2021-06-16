@@ -175,43 +175,52 @@ async fn rx_process(
     Ok(())
 }
 
-async fn run_connection(end_point_id: SocketAddr) -> Result<(), io::Error> {
+async fn run_connection(end_point_id: SocketAddr) -> Result<(), (bool,io::Error)> {
 
     let client = hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
 
-    let (rx_end_point, tx_end_point) = TcpStream::connect(end_point_id).await?.into_split();
+    let (rx_end_point, tx_end_point) = TcpStream::connect(end_point_id).await.map_err(|e|(false,e))?.into_split();
     let (tx_channel, rx_channel) = mpsc::channel(TX_QUEUE_LENGTH);
 
     let rx_process_fut = rx_process(rx_end_point.into(), tx_channel, client);
-
     let tx_process_fut = TcpSender::mp_process(tx_end_point.into(), rx_channel);
 
     pin!{ rx_process_fut, tx_process_fut };
 
     tracing::info!("connection established to: {}", end_point_id);
 
-    select! {
+    (select! {
         rx_e = rx_process_fut => rx_e,
         tx_e = tx_process_fut => tx_e,
-    }
+    })
+    .map_err(|e|(true,e))
 }
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+
+    let end_point = std::env::var("CPM_MIRROR_REMOTE_END_POINT").expect("value for `CPM_MIRROR_REMOTE_END_POINT`");
+    let end_point = SocketAddr::from_str(&end_point).expect("a legal end point value for `CPM_MIRROR_REMOTE_END_POINT`");
+
+    tracing::info!("attempting connection to: {}", end_point);
+
+    let mut show_error = true;
+
     loop {
-        let end_point = std::env::var("CPM_MIRROR_REMOTE_END_POINT").expect("value for `CPM_MIRROR_REMOTE_END_POINT`");
-
-        let end_point = SocketAddr::from_str(&end_point).expect("a legal end point value for `CPM_MIRROR_REMOTE_END_POINT`");
-
-        tracing::info!("attempting connection to: {}", end_point);
-
         match run_connection(end_point).await {
             Ok(_) => break,
-            Err(err) => {
-                tracing::error!("connection failed: {}", err);
+            Err((did_connect, err)) => {
+                if show_error || did_connect {
+                    tracing::error!("failed connection to {} with: {}", end_point, err);
+                    show_error = false;
+                } else {
+                    tracing::debug!("failed connection to {} with: {}", end_point, err);
+                }
                 sleep(DOWN_LINK_RETRY_DELAY).await;
             }
         }
+
+        tracing::debug!("attempting connection to: {}", end_point);
     }
 }
