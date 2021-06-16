@@ -80,6 +80,10 @@ mod tcp_sender
 {
     use serde::Serialize;
     use tokio::{io::{self, AsyncWriteExt},net::tcp::OwnedWriteHalf};
+    use futures::{
+        channel::mpsc,
+        stream::StreamExt,
+    };
 
     pub struct TcpSender<T:Serialize> {
         socket: OwnedWriteHalf,
@@ -103,6 +107,18 @@ mod tcp_sender
         pub async fn close(mut self) -> Result<(),io::Error> {
             self.socket.write_u16(0).await?;
             self.socket.shutdown().await?;
+            Ok(())
+        }
+
+
+        pub async fn mp_process(
+            mut self,
+            mut source: mpsc::Receiver<T>
+        ) -> Result<(), io::Error> {
+            while let Some(event) = source.next().await {
+                self.send(&event).await?;
+            }
+            self.close().await?;
             Ok(())
         }
     }

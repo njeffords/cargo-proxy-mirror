@@ -1,18 +1,21 @@
 
 use std::{
+    //sync::Arc,
     str::FromStr,
     net::SocketAddr,
-    sync::{Arc,Mutex},
     convert::{TryFrom,TryInto},
 };
 
 use futures::{
     sink::SinkExt,
     channel::mpsc,
-    stream::StreamExt,
 };
 
-use hyper::{http, body::{Buf, HttpBody}};
+use hyper::{
+    http,
+    body::HttpBody,
+    header::{HeaderName, CONTENT_TYPE,CONTENT_LENGTH},
+};
 
 use tokio::{
     pin,select,
@@ -25,46 +28,10 @@ use displaydoc::Display;
 
 use common::{TcpSender,TcpReceiver,up_stream,down_stream};
 
-const TX_BUFFER_SIZE: usize = 64*1024;
 const TX_QUEUE_LENGTH: usize = 256;
 const DOWN_LINK_RETRY_DELAY: Duration = Duration::from_millis(1000);
 
 type HttpClient = hyper::client::Client<hyper_tls::HttpsConnector<hyper::client::connect::HttpConnector>>;
-
-#[derive(Default)]
-struct BufferPool(Vec<Vec<u8>>);
-
-impl BufferPool {
-    fn borrow_buffer(&mut self) -> Vec<u8> {
-        match self.0.pop() {
-            None => Vec::with_capacity(TX_BUFFER_SIZE),
-            Some(buffer) => buffer
-        }
-    }
-
-    fn return_buffer(&mut self, buffer: Vec<u8>) {
-        self.0.push(buffer)
-    }
-}
-
-struct State{
-    client: HttpClient,
-    buffers: Mutex<BufferPool>,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        let https = hyper_tls::HttpsConnector::new();
-        let client = hyper::Client::builder().build::<_, hyper::Body>(https);
-        Self { client, buffers: Default::default() }
-    }
-}
-
-type StateRef = Arc<State>;
-
-impl State {
-    fn new() -> StateRef { Arc::new(Default::default()) }
-}
 
 struct DownloadStream {
     session_id: u32,
@@ -102,48 +69,35 @@ enum DownloadError {
     BadOrMissingHeader(&'static hyper::header::HeaderName),
 }
 
-async fn do_download(state: StateRef, mut response: hyper::Response<hyper::Body>, tx: &mut DownloadStream) -> Result<(),DownloadError> {
+async fn do_download(mut response: hyper::Response<hyper::Body>, tx: &mut DownloadStream) -> Result<(),DownloadError> {
 
     use down_stream::Opcode::*;
 
     tracing::trace!("headers: {:?}", response.headers());
 
-    fn get_header<T:std::str::FromStr>(response: &hyper::Response<hyper::Body>, name: &'static hyper::header::HeaderName) -> Result<T,DownloadError> {
+    fn get_header<T:FromStr>(response: &hyper::Response<hyper::Body>, name: &'static HeaderName) -> Result<T,DownloadError> {
         use DownloadError::BadOrMissingHeader;
-        if let Some(value) = response.headers().get(name) {
-            let value = value.to_str().map_err(|_|BadOrMissingHeader(name))?;
-            let value = T::from_str(value).map_err(|_|BadOrMissingHeader(name))?;
-            Ok(value)
-        } else {
-            Err(BadOrMissingHeader(name))
-        }
+        T::from_str(
+            response.headers()
+                .get(name).ok_or_else(||BadOrMissingHeader(name))?
+                .to_str().map_err(|_|BadOrMissingHeader(name))?
+        ).map_err(|_|BadOrMissingHeader(name))
     }
 
     let headers = down_stream::Headers {
-        content_type: get_header(&response, &hyper::header::CONTENT_TYPE)?,
-        content_length: get_header(&response, &hyper::header::CONTENT_LENGTH)?,
+        content_type: get_header(&response, &CONTENT_TYPE)?,
+        content_length: get_header(&response, &CONTENT_LENGTH)?,
     };
 
     tx.send_message(Init(headers)).await?;
 
     while let Some(block) = response.data().await {
 
-        let mut block = block?;
+        let block = block?;
 
         tracing::trace!("block: {}", block.len());
 
-        while block.has_remaining() {
-
-            let mut buffer = state.buffers.lock().unwrap().borrow_buffer();
-
-            tracing::trace!("buffer size: {}", buffer.capacity());
-
-            buffer.resize(buffer.capacity ().min(block.len()), 0);
-
-            block.copy_to_slice(&mut buffer);
-
-            tx.send_message(Chunk(buffer.into())).await?;
-        }
+        tx.send_message(Chunk(block.to_vec().into())).await?;
     }
 
     Ok(())
@@ -160,11 +114,11 @@ fn get_redirect_location(headers: &hyper::HeaderMap) -> std::result::Result<http
 }
 
 
-async fn download_file(state: StateRef, mut uri: http::Uri, tx: &mut DownloadStream) -> Result<(),DownloadError> {
+async fn download_file(client: HttpClient, mut uri: http::Uri, tx: &mut DownloadStream) -> Result<(),DownloadError> {
 
     let response = loop {
 
-        let response = state.client.get(uri).await?;
+        let response = client.get(uri).await?;
 
         tracing::trace!("response: {:?}", response.status());
 
@@ -181,27 +135,13 @@ async fn download_file(state: StateRef, mut uri: http::Uri, tx: &mut DownloadStr
         tracing::trace!("redirecting to: {:?}", uri);
     };
 
-    do_download(state, response, tx).await
-}
-
-async fn tx_process(
-    state: StateRef,
-    mut tx_end_point: TcpSender<down_stream::Message>,
-    mut rx_channel: mpsc::Receiver<down_stream::Message>
-) -> Result<(), io::Error> {
-    while let Some(event) = rx_channel.next().await {
-        tx_end_point.send(&event).await?;
-        if let down_stream::Message{session_id:_,opcode:down_stream::Opcode::Chunk(buffer)} = event {
-            state.buffers.lock().unwrap().return_buffer(buffer.into());
-        }
-    }
-    Ok(())
+    do_download(response, tx).await
 }
 
 async fn rx_process(
-    state: StateRef,
     mut rx_end_point: TcpReceiver<up_stream::Request>,
-    tx_channel: mpsc::Sender<down_stream::Message>
+    tx_channel: mpsc::Sender<down_stream::Message>,
+    client: HttpClient,
 ) -> Result<(), io::Error> {
     while let Some(up_stream::Request{session_id,package,version}) = rx_end_point.next().await? {
 
@@ -214,9 +154,9 @@ async fn rx_process(
         let uri = http::Uri::try_from(&uri_str).expect(&format!("{} to be a valid URI", uri_str));
         let mut stream = DownloadStream{ session_id, tx_channel };
 
-        let state = state.clone();
+        let client = client.clone();
         tokio::spawn(async move {
-            match download_file(state, uri, &mut stream).await {
+            match download_file(client, uri, &mut stream).await {
                 Ok(_) => {
                     tracing::info!("download of {}/{} completed", package, version);
                     if let Err(err) = stream.send_complete().await {
@@ -237,13 +177,14 @@ async fn rx_process(
 
 async fn run_connection(end_point_id: SocketAddr) -> Result<(), io::Error> {
 
-    let state = State::new();
+    let client = hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
 
     let (rx_end_point, tx_end_point) = TcpStream::connect(end_point_id).await?.into_split();
     let (tx_channel, rx_channel) = mpsc::channel(TX_QUEUE_LENGTH);
 
-    let rx_process_fut = rx_process(state.clone(), rx_end_point.into(), tx_channel);
-    let tx_process_fut = tx_process(state.clone(), tx_end_point.into(), rx_channel);
+    let rx_process_fut = rx_process(rx_end_point.into(), tx_channel, client);
+
+    let tx_process_fut = TcpSender::mp_process(tx_end_point.into(), rx_channel);
 
     pin!{ rx_process_fut, tx_process_fut };
 

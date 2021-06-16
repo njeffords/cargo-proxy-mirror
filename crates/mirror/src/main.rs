@@ -1,4 +1,5 @@
 use std::{
+    sync::Arc,
     str::FromStr,
     convert::Infallible,
     net::SocketAddr,
@@ -15,9 +16,17 @@ use hyper::service::{make_service_fn, service_fn};
 use hyper::http::{Uri, Method,StatusCode};
 use hyper_staticfile::FileResponseBuilder;
 
+use common::down_stream;
+use futures::StreamExt;
+
+use thiserror::Error;
+use displaydoc::Display;
+
 mod proxy_connection;
 
-use proxy_connection::{State, StateRef, proxy_connection};
+use proxy_connection::ProxyConnection;
+
+type ProxyRef = Arc<ProxyConnection>;
 
 fn parse_download_request(uri: &Uri) -> Result<(&str, &str), u16> {
     if let Some(pnq) = uri.path_and_query() {
@@ -61,21 +70,15 @@ async fn download_cached(req: &Request<Body>, cache_path: PathBuf) -> Result<Res
         .map_err(|_|500u16)
 }
 
-use common::down_stream;
-use futures::StreamExt;
-
-use thiserror::Error;
-use displaydoc::Display;
-
 #[derive(Error,Display,Debug)]
 enum StreamError{
     /// an unexpected error occured
     Unexpected
 }
 
-async fn proxy_download(state: StateRef, package: &str, version: &str, _cache_path: Option<PathBuf>) -> Result<Response<Body>,u16> {
+async fn proxy_download(proxy: ProxyRef, package: &str, version: &str, _cache_path: Option<PathBuf>) -> Result<Response<Body>,u16> {
 
-    let mut stream = State::begin_download(state, package.into(), version.into()).await.map_err(|_|404u16)?;
+    let mut stream = proxy.begin_download(package.into(), version.into()).await.map_err(|_|404u16)?;
 
     if let Some(down_stream::Opcode::Init(headers)) = stream.next().await {
 
@@ -102,7 +105,7 @@ async fn proxy_download(state: StateRef, package: &str, version: &str, _cache_pa
     }
 }
 
-async fn download(state: StateRef, req: &Request<Body>, package: &str, version: &str) -> Result<Response<Body>,u16> {
+async fn download(proxy: ProxyRef, req: &Request<Body>, package: &str, version: &str) -> Result<Response<Body>,u16> {
 
     if let Ok(cache_path) = env::var("CPM_CRATE_CACHE") {
 
@@ -114,21 +117,21 @@ async fn download(state: StateRef, req: &Request<Body>, package: &str, version: 
         if cache_path.exists() {
             download_cached(req, cache_path).await
         } else {
-            proxy_download(state, package, version, Some(cache_path)).await
+            proxy_download(proxy, package, version, Some(cache_path)).await
         }
 
     } else {
-        proxy_download(state, package, version, None).await
+        proxy_download(proxy, package, version, None).await
     }
 }
 
-async fn handler(state: StateRef, req: Request<Body>) -> Result<Response<Body>, Infallible> {
+async fn handler(proxy: ProxyRef, req: Request<Body>) -> Result<Response<Body>, Infallible> {
     tracing::trace!("entering handler...");
     if req.method() == Method::GET {
         match parse_download_request(req.uri()) {
             Ok((package, version)) => {
                 tracing::info!("package: {:?}, version: {:?}", package, version);
-                download(state, &req, package, version).await.or_else(|code|Ok(error_response(code)))
+                download(proxy, &req, package, version).await.or_else(|code|Ok(error_response(code)))
             },
             Err(code) => Ok(error_response(code)),
         }
@@ -146,14 +149,14 @@ async fn main() {
 
     let addr = SocketAddr::from_str(&http_end_point).expect("legal end point value for `CPM_HTTP_LOCAL_END_POINT`");
 
-    let state = State::new();
+    let proxy = ProxyConnection::new();
 
     let make_svc = {
-        let state = state.clone();
+        let proxy = proxy.clone();
         make_service_fn(move |_conn| {
-            let state = state.clone();
+            let proxy = proxy.clone();
             async {
-                Ok::<_, Infallible>(service_fn(move |req| { handler(state.clone(), req) }))
+                Ok::<_, Infallible>(service_fn(move |req| { handler(proxy.clone(), req) }))
             }
         })
     };
@@ -162,8 +165,7 @@ async fn main() {
 
     tracing::info!("accepting HTTP connections on: {}", addr);
 
-    let proxy_server = proxy_connection(state).fuse();
-
+    let proxy_server = proxy.serve().fuse();
 
     pin!{cache_server,proxy_server};
 

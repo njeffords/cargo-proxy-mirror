@@ -10,7 +10,7 @@ use std::{
 use thiserror::Error;
 use displaydoc::Display;
 
-use futures::{channel::mpsc, stream::StreamExt, sink::SinkExt};
+use futures::{channel::mpsc, sink::SinkExt};
 
 use tokio::net::TcpListener;
 
@@ -35,14 +35,9 @@ pub struct State{
     sessions: HashMap<u32,mpsc::Sender<down_stream::Opcode>>,
 }
 
-pub type StateRef = Arc<Mutex<State>>;
+pub struct ProxyConnection(Mutex<State>);
 
 impl State {
-
-    pub fn new() -> StateRef {
-        Arc::new(Mutex::new(Default::default()))
-    }
-
     fn add_session(&mut self, tx: mpsc::Sender<down_stream::Opcode>) -> u32 {
         loop {
             use std::collections::hash_map::Entry::*;
@@ -58,9 +53,46 @@ impl State {
         }
     }
 
-    pub async fn begin_download(state: StateRef, package: String, version: String) -> Result<mpsc::Receiver<down_stream::Opcode>> {
+    pub fn reset_uplink_to(&mut self, stream: TcpSender<up_stream::Request>) -> Result<()> {
+        if self.uplink.is_some() {
+            let sessions = std::mem::replace(&mut self.sessions, Default::default());
+
+            // distance ourself from existing connections so that they may take their time cleaning up
+            tokio::spawn(async move {
+                use down_stream::{Opcode::Complete,Error::Unspecified};
+                for (_, mut tx) in sessions {
+                    if let Err(err) = tx.send(Complete(Err(Unspecified))).await {
+                        tracing::error!("failed to cleanly terminated download on upload reset: {:?}", err)
+                    }
+                }
+            });
+
+            self.uplink = None;
+            self.sessions.clear();
+        }
+
+        let (tx, rx) = mpsc::channel::<up_stream::Request>(8);
+
+        tokio::spawn(async move {
+            if let Err(err) = stream.mp_process(rx).await {
+                tracing::error!("uplink failed with: {}", err);
+            }
+        });
+
+        self.uplink = Some(tx);
+        Ok(())
+    }
+}
+
+impl ProxyConnection {
+
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self(Mutex::new(Default::default())))
+    }
+
+    pub async fn begin_download(self: &Arc<Self>, package: String, version: String) -> Result<mpsc::Receiver<down_stream::Opcode>> {
         let (mut uplink, session_id, rx) = {
-            let mut state = state.lock().unwrap();
+            let mut state = self.0.lock().unwrap();
             if let Some(uplink) = state.uplink.clone() {
                 let (tx,rx) = mpsc::channel::<down_stream::Opcode>(8);
                 let session_id = state.add_session(tx);
@@ -74,54 +106,20 @@ impl State {
         Ok(rx)
     }
 
-    async fn process_uplink(mut rx: mpsc::Receiver<up_stream::Request>, mut tx: TcpSender<up_stream::Request>) -> Result<()> {
-        while let Some(request) = rx.next ().await {
-            tx.send(&request).await?;
-        }
-        tx.close().await?;
-        Ok(())
-    }
 
-    pub fn reset_uplink_to(&mut self, stream: TcpSender<up_stream::Request>) -> Result<()> {
-        if self.uplink.is_some() {
-            let sessions = std::mem::replace(&mut self.sessions, Default::default());
-            tokio::spawn(async move {
-                use down_stream::{Opcode::Complete,Error::Unspecified};
-                for (_, mut tx) in sessions {
-                    if let Err(err) = tx.send(Complete(Err(Unspecified))).await {
-                        tracing::error!("failed to cleanly terminated download on upload reset: {:?}", err)
-                    }
-                }
-            });
-            self.uplink = None;
-            self.sessions.clear();
-        }
-
-        let (tx, rx) = mpsc::channel::<up_stream::Request>(8);
-
-        tokio::spawn(async move {
-            if let Err(err) = Self::process_uplink(rx, stream).await {
-                tracing::error!("uplink failed with: {}", err);
-            }
-        });
-
-        self.uplink = Some(tx);
-        Ok(())
-    }
-
-    async fn process_receives(state: StateRef, mut stream: TcpReceiver<down_stream::Message>) -> Result<()> {
+    async fn process_receives(self: &Arc<Self>, mut stream: TcpReceiver<down_stream::Message>) -> Result<()> {
 
         while let Some(down_stream::Message{session_id, opcode}) = stream.next().await? {
             tracing::trace!("down_stream message received for {}: {:?}", session_id, opcode);
             use std::collections::hash_map::Entry::*;
-            let res = match state.lock().unwrap().sessions.entry(session_id) {
+            let res = match self.0.lock().unwrap().sessions.entry(session_id) {
                 Occupied(entry) => Some(entry.get().clone()),
                 Vacant(_) => None,
             };
             match res {
                 Some(mut sender) => if let Err(err) = sender.send(opcode).await {
                     tracing::error!("failed to deliver message for session {} with: {}", session_id, err);
-                    if let Occupied(entry) = state.lock().unwrap().sessions.entry(session_id) {
+                    if let Occupied(entry) = self.0.lock().unwrap().sessions.entry(session_id) {
                         entry.remove();
                     }
                 },
@@ -131,25 +129,25 @@ impl State {
 
         Ok(())
     }
-}
 
-pub(crate) async fn proxy_connection(state: StateRef) -> Result<()> {
+    pub async fn serve(self: Arc<Self>)-> Result<()> {
 
-    let local_end_point = std::env::var("CPM_MIRROR_PROXY_LOCAL_END_POINT").expect("value for `CPM_MIRROR_PROXY_LOCAL_END_POINT`");
+        let local_end_point = std::env::var("CPM_MIRROR_PROXY_LOCAL_END_POINT").expect("value for `CPM_MIRROR_PROXY_LOCAL_END_POINT`");
 
-    let local_end_point = SocketAddr::from_str(&local_end_point).expect("legal end point value for `CPM_MIRROR_PROXY_LOCAL_END_POINT`");
+        let local_end_point = SocketAddr::from_str(&local_end_point).expect("legal end point value for `CPM_MIRROR_PROXY_LOCAL_END_POINT`");
 
-    let listener = TcpListener::bind(local_end_point).await?;
-    loop {
-        let (socket, from) = listener.accept().await?;
-        tracing::info!("accepted connection from: {}", from);
-        let (rx,tx) = socket.into_split();
-        state.lock().unwrap().reset_uplink_to(tx.into())?;
-        match State::process_receives(state.clone(), rx.into()).await {
-            Err(err) => {
-                tracing::error!("receive process failed with: {}", err);
-            },
-            Ok(_) => {},
+        let listener = TcpListener::bind(local_end_point).await?;
+        loop {
+            let (socket, from) = listener.accept().await?;
+            tracing::info!("accepted connection from: {}", from);
+            let (rx,tx) = socket.into_split();
+            self.0.lock().unwrap().reset_uplink_to(tx.into())?;
+            match self.process_receives(rx.into()).await {
+                Err(err) => {
+                    tracing::error!("receive process failed with: {}", err);
+                },
+                Ok(_) => {},
+            }
         }
     }
 }
