@@ -28,9 +28,7 @@ C:\Projects\n8ware\rust\proxy-mirror\test>dir
 
 06/14/2021  07:55 PM    <DIR>          .
 06/14/2021  07:55 PM    <DIR>          ..
-06/14/2021  11:16 AM    <DIR>          crates.io-index
 06/14/2021  07:56 PM    <DIR>          crates.io-index.git
-06/14/2021  07:10 PM    <DIR>          test-proxy
                0 File(s)              0 bytes
                5 Dir(s)  66,001,768,448 bytes free
 
@@ -61,8 +59,6 @@ Then:
 ```
 C:\cpm> set RUST_LOG=info
 C:\cpm> mirror
-Jun 16 11:11:57.603  INFO mirror: accepting HTTP connections on: 0.0.0.0:3000
-Jun 16 11:11:59.792  INFO mirror::proxy_connection: accepted connection from: 127.0.0.1:54736
 ```
 
 
