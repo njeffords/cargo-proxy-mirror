@@ -14,17 +14,30 @@ PS[Proxy Server] --> IN([Internet])
 
 It consists of a pair of services. The proxy service sits on machine with access to both the internet and the protected network. The mirror service sits one the protected network and provides the HTTP download side of the cargo repository protocol. The mirror accepts a connection from the proxy, and while connected can request downloads of crates from the proxy when called upon by an instance of cargo running on the protected network.
 
-The proxy is intentionally limited in functionality to minimize security concerns. It initiates a connection to the mirror service so that it does not need to accept any arbitrary connections for unknown or untrusted clients. It only supports fielding requests for packages by accepting a package name and version via a custom RPC protocol which prevent misuse. It only attempt connecting to its configured mirror server which makes it difficult to intercept. By being implemented in only safe rust and not allowing any incoming connections, its attack surface is significantly reduced.
+The proxy is intentionally limited in functionality to minimize security concerns. It initiates a connection to the mirror service so that it does not need to accept any arbitrary connections from unknown or untrusted clients. It only supports fielding requests for packages by accepting a package name and version via a custom RPC protocol which helps prevent misuse. It only attempts connecting to its configured mirror server which makes it difficult to intercept. By being implemented in only safe rust and not allowing any incoming connections, its attack surface is significantly reduced.
 
 ## Usage
 
-Cargo requires access to a git repository with an index of all available packages, it then requests via a URL embedded in the index packages from an HTTP server with a particular format of URL. Currently, the copy of the cargo package index must be kept up to date manually. It can be served easily by the `git daemon` command on the mirror server. (see its documentation  for the specifics of hosting)
+Cargo requires access to a git repository with an index of all available packages, it then requests via a URL embedded in the index packages from an HTTP server with a particular format of URL. Currently, the copy of the cargo package index must be kept up to date manually.
+
+The mirrored repository must have the `config.json` file updated to point at the mirror server with `{mirror-end-point}` replaced appropriately (including the port number, see `CPM_HTTP_LOCAL_END_POINT` below).
+
+```json
+{
+  "dl": "http://{mirror-end-point}/api/v1/crates",
+  "api": "http://{mirror-end-point}"
+}
+```
+
+
+
+It can be served easily by the `git daemon` command on the mirror server. (see its documentation  for the specifics of hosting)
 
 ```
-C:\Projects\n8ware\rust\proxy-mirror\test>dir
+C:\Projects\n8ware\rust\cargo-proxy-mirror\test>dir
  Volume in drive C has no label.
 
- Directory of C:\Projects\n8ware\rust\proxy-mirror\test
+ Directory of C:\Projects\n8ware\rust\cargo-proxy-mirror\test
 
 06/14/2021  07:55 PM    <DIR>          .
 06/14/2021  07:55 PM    <DIR>          ..
@@ -32,16 +45,17 @@ C:\Projects\n8ware\rust\proxy-mirror\test>dir
                0 File(s)              0 bytes
                5 Dir(s)  66,001,768,448 bytes free
 
-C:\Projects\n8ware\rust\proxy-mirror\test>git daemon --base-path=%CD%
+C:\Projects\n8ware\rust\cargo-proxy-mirror\test>echo . > crates.io-index.git\git-daemon-export-ok
+C:\Projects\n8ware\rust\cargo-proxy-mirror\test>git daemon --base-path=%CD%
 ```
 
 A machine on the protected network must have its cargo config setup to point at the mirror server.
 
-Add this  `~\.cargo\config.toml` with `{mirror-server-name-or-address}` set appropriately:
+Add this  `~\.cargo\config.toml` with `{git-server-name-or-address}` set appropriately:
 
 ```toml
 [source.mirror]
-registry = "git://{mirror-server-name-or-address}/crates.io-index.git"
+registry = "git://{git-server-name-or-address}/crates.io-index.git"
 [source.crates-io]
 replace-with = "mirror"
 
