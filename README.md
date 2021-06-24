@@ -2,7 +2,7 @@
 
 ## Overview
 
-This tool allows access to the rust crate repository from a network without direct internet access, but with a connected server that does.
+This tool allows access to the rust crate repository from a network without direct internet access, but with a access to a server that does.
 
 ```mermaid
 graph LR
@@ -12,15 +12,15 @@ PS[Proxy Server] --> IN([Internet])
 
 ```
 
-It consists of a pair of services. The proxy service sits on machine with access to both the internet and the protected network. The mirror service sits one the protected network and provides the HTTP download side of the cargo repository protocol. The mirror accepts a connection from the proxy, and while connected can request downloads of crates from the proxy when called upon by an instance of cargo running on the protected network.
+It consists of a pair of services. The proxy service sits on a machine with access to both the internet and the protected network. The mirror service sits on a machine on the protected network and provides the HTTP download side of the cargo repository protocol. The mirror accepts a connection from the proxy, and while connected can request the download of crates from the proxy when called upon by an instance of cargo running on the protected network.
 
 The proxy is intentionally limited in functionality to minimize security concerns. It initiates a connection to the mirror service so that it does not need to accept any arbitrary connections from unknown or untrusted clients. It only supports fielding requests for packages by accepting a package name and version via a custom RPC protocol which helps prevent misuse. It only attempts connecting to its configured mirror server which makes it difficult to intercept. By being implemented in only safe rust and not allowing any incoming connections, its attack surface is significantly reduced.
 
 ## Usage
 
-Cargo requires access to a git repository with an index of all available packages, it then requests via a URL embedded in the index packages from an HTTP server with a particular format of URL. Currently, the copy of the cargo package index must be kept up to date manually.
+Cargo requires access to a git repository with an index of all available packages. Currently, the copy of the cargo package index must be kept up to date manually. Cargo uses a URL in the git index repository to form its download requests. The mirrored repository must have its `config.json` file updated to point at the mirror server.
 
-The mirrored repository must have the `config.json` file updated to point at the mirror server with `{mirror-end-point}` replaced appropriately (including the port number, see `CPM_HTTP_LOCAL_END_POINT` below).
+In the following example, `{mirror-end-point}` must be replaced (including the port number, see `CPM_HTTP_LOCAL_END_POINT` below).
 
 ```json
 {
@@ -28,8 +28,6 @@ The mirrored repository must have the `config.json` file updated to point at the
   "api": "http://{mirror-end-point}"
 }
 ```
-
-
 
 It can be served easily by the `git daemon` command on the mirror server. (see its documentation  for the specifics of hosting)
 

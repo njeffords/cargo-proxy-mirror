@@ -1,3 +1,5 @@
+///! # Rust Cargo crate proxy service
+
 
 use std::{
     //sync::Arc,
@@ -21,12 +23,25 @@ use tokio::{
     pin,select,
     io, time::{sleep, Duration},
     net::TcpStream,
+    sync::watch,
 };
 
 use thiserror::Error;
 use displaydoc::Display;
 
 use common::{TcpSender,TcpReceiver,up_stream,down_stream};
+
+use structopt::StructOpt;
+#[derive(StructOpt,Debug)]
+struct ServiceConfig {
+    /// The address and port of the mirror service.
+    #[structopt(short, long, env = "CPM_MIRROR_REMOTE_END_POINT")]
+    mirror_end_point: SocketAddr,
+
+    /// The base URL of the crate server.
+    #[structopt(short, long, default_value="https://crates.io/api/v1/crates", env = "CPM_CRATES_IO_BASE_URL")]
+    crates_io_base_url: String,
+}
 
 const TX_QUEUE_LENGTH: usize = 256;
 const DOWN_LINK_RETRY_DELAY: Duration = Duration::from_millis(1000);
@@ -142,14 +157,13 @@ async fn rx_process(
     mut rx_end_point: TcpReceiver<up_stream::Request>,
     tx_channel: mpsc::Sender<down_stream::Message>,
     client: HttpClient,
+    base_url: &str,
 ) -> Result<(), io::Error> {
     while let Some(up_stream::Request{session_id,package,version}) = rx_end_point.next().await? {
 
         let tx_channel = tx_channel.clone();
 
-        let server = std::env::var("CPM_CRATES_IO_BASE_URL").expect("a value for `CPM_CRATES_IO_BASE_URL`");
-
-        let uri_str = format!("{}/{}/{}/download", server, package, version);
+        let uri_str = format!("{}/{}/{}/download", base_url, package, version);
         tracing::info!("request for: {}", uri_str);
         let uri = http::Uri::try_from(&uri_str).expect(&format!("{} to be a valid URI", uri_str));
         let mut stream = DownloadStream{ session_id, tx_channel };
@@ -175,40 +189,37 @@ async fn rx_process(
     Ok(())
 }
 
-async fn run_connection(end_point_id: SocketAddr) -> Result<(), (bool,io::Error)> {
+async fn run_connection(end_point_id: SocketAddr, base_url: &str, mut running: watch::Receiver<bool>) -> Result<(), (bool,io::Error)> {
 
     let client = hyper::Client::builder().build::<_, hyper::Body>(hyper_tls::HttpsConnector::new());
 
     let (rx_end_point, tx_end_point) = TcpStream::connect(end_point_id).await.map_err(|e|(false,e))?.into_split();
     let (tx_channel, rx_channel) = mpsc::channel(TX_QUEUE_LENGTH);
 
-    let rx_process_fut = rx_process(rx_end_point.into(), tx_channel, client);
+    let rx_process_fut = rx_process(rx_end_point.into(), tx_channel, client, base_url);
     let tx_process_fut = TcpSender::mp_process(tx_end_point.into(), rx_channel);
+    let terminated_fut = async { while *running.borrow() { running.changed().await.unwrap(); } Ok(()) };
 
-    pin!{ rx_process_fut, tx_process_fut };
+    pin!{ rx_process_fut, tx_process_fut, terminated_fut };
 
     tracing::info!("connection established to: {}", end_point_id);
 
     (select! {
-        rx_e = rx_process_fut => rx_e,
-        tx_e = tx_process_fut => tx_e,
+        r = rx_process_fut => r,
+        r = tx_process_fut => r,
+        r = terminated_fut => r,
     })
     .map_err(|e|(true,e))
 }
 
-#[tokio::main]
-async fn main() {
-    tracing_subscriber::fmt::init();
-
-    let end_point = std::env::var("CPM_MIRROR_REMOTE_END_POINT").expect("value for `CPM_MIRROR_REMOTE_END_POINT`");
-    let end_point = SocketAddr::from_str(&end_point).expect("a legal end point value for `CPM_MIRROR_REMOTE_END_POINT`");
-
+pub async fn run_for_a_while(end_point: SocketAddr, base_url: String, running: watch::Receiver<bool>) {
+    tracing::info!("base crate URL is: {}", base_url);
     tracing::info!("attempting connection to: {}", end_point);
 
     let mut show_error = true;
 
-    loop {
-        match run_connection(end_point).await {
+    while *running.borrow() {
+        match run_connection(end_point, &base_url, running.clone()).await {
             Ok(_) => break,
             Err((did_connect, err)) => {
                 if show_error || did_connect {
@@ -223,4 +234,19 @@ async fn main() {
 
         tracing::debug!("attempting connection to: {}", end_point);
     }
+}
+
+fn run_forever(config: ServiceConfig) {
+    tracing_subscriber::fmt::init();
+    let (_set_running,running) = tokio::sync::watch::channel(true);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(run_for_a_while(config.mirror_end_point, config.crates_io_base_url, running))
+}
+
+fn main() {
+    tracing_subscriber::fmt::init();
+    run_forever(ServiceConfig::from_args());
 }
