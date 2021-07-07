@@ -76,6 +76,21 @@ pub mod down_stream
     }
 }
 
+mod api_serde {
+
+    use std::io;
+    use serde::{Serialize,de::DeserializeOwned};
+
+    pub fn serialize<T:Serialize>(value: &T) -> Result<Vec<u8>, io::Error> {
+        bincode::serialize(value).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,e))
+    }
+
+    pub fn deserialize<T:DeserializeOwned>(bytes: &[u8]) -> Result<T, io::Error> {
+        bincode::deserialize::<T>(bytes).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,e))
+    }
+
+}
+
 mod tcp_sender
 {
     use serde::Serialize;
@@ -85,14 +100,13 @@ mod tcp_sender
         stream::StreamExt,
     };
 
+    use super::api_serde::serialize;
+
     pub struct TcpSender<T:Serialize> {
         socket: OwnedWriteHalf,
         _value: std::marker::PhantomData<T>
     }
 
-    pub fn serialize<T:Serialize>(value: &T) -> Result<Vec<u8>, io::Error> {
-        bincode::serialize(value).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,e))
-    }
 
     impl<T:Serialize> TcpSender<T> {
         pub async fn send(&mut self, value: &T) -> Result<(), io::Error> {
@@ -109,7 +123,6 @@ mod tcp_sender
             self.socket.shutdown().await?;
             Ok(())
         }
-
 
         pub async fn mp_process(
             mut self,
@@ -135,13 +148,11 @@ mod tcp_receiver
     use serde::de::DeserializeOwned;
     use tokio::{io::{self, AsyncReadExt},net::tcp::OwnedReadHalf};
 
+    use super::api_serde::deserialize;
+
     pub struct TcpReceiver<T:DeserializeOwned> {
         socket: OwnedReadHalf,
         _value: std::marker::PhantomData<T>
-    }
-
-    pub fn deserialize<T:DeserializeOwned>(bytes: &[u8]) -> Result<T, io::Error> {
-        bincode::deserialize::<T>(bytes).map_err(|e|io::Error::new(io::ErrorKind::InvalidData,e))
     }
 
     impl<T:DeserializeOwned> TcpReceiver<T> {
