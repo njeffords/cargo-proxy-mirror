@@ -109,6 +109,7 @@ mod tcp_sender
 
 
     impl<T:Serialize> TcpSender<T> {
+
         pub async fn send(&mut self, value: &T) -> Result<(), io::Error> {
             let bytes = &serialize(value)?;
             let len = bytes.len ();
@@ -178,3 +179,7 @@ mod tcp_receiver
 
 pub use tcp_sender::TcpSender;
 pub use tcp_receiver::TcpReceiver;
+
+mod sync_tcp_end_point;
+
+pub use sync_tcp_end_point::SyncTcpEndPoint;
