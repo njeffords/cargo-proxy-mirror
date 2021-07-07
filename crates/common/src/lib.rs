@@ -76,6 +76,8 @@ pub mod down_stream
     }
 }
 
+pub mod cpm_api;
+
 mod api_serde {
 
     use std::io;

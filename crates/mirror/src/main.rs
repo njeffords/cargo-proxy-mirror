@@ -22,6 +22,7 @@ use futures::StreamExt;
 use thiserror::Error;
 use displaydoc::Display;
 
+mod cli_server;
 mod proxy_connection;
 
 use proxy_connection::ProxyConnection;
@@ -146,8 +147,10 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let http_end_point = env::var("CPM_HTTP_LOCAL_END_POINT").expect("value for `CPM_HTTP_LOCAL_END_POINT`");
+    let cpm_api_end_point = env::var("CPM_API_LOCAL_END_POINT").unwrap_or_else(|_|"0.0.0.0:4004".into());
 
-    let addr = SocketAddr::from_str(&http_end_point).expect("legal end point value for `CPM_HTTP_LOCAL_END_POINT`");
+    let http_end_point = SocketAddr::from_str(&http_end_point).expect("legal end point value for `CPM_HTTP_LOCAL_END_POINT`");
+    let cpm_api_end_point = SocketAddr::from_str(&cpm_api_end_point).expect("legal end point value for `CPM_API_LOCAL_END_POINT`");
 
     let proxy = ProxyConnection::new();
 
@@ -161,13 +164,20 @@ async fn main() {
         })
     };
 
-    let cache_server = Server::bind(&addr).serve(make_svc).fuse();
+    let cache_server = Server::bind(&http_end_point).serve(make_svc).fuse();
 
-    tracing::info!("accepting HTTP connections on: {}", addr);
+    let cpm_api_server = cli_server::service(
+        cpm_api_end_point,
+        std::env::var("CPM_CRATE_CACHE").unwrap().into(),
+    );
+
+    tracing::info!("accepting HTTP connections on: {}", http_end_point);
+    tracing::info!("accepting CPM-API connections on: {}", cpm_api_end_point);
 
     let proxy_server = proxy.serve().fuse();
+    let cpm_api_server = cpm_api_server.fuse();
 
-    pin!{cache_server,proxy_server};
+    pin!{cache_server,proxy_server,cpm_api_server};
 
     select!{
         c_e = cache_server => {
@@ -175,10 +185,17 @@ async fn main() {
                 tracing::error!("cache server error: {}", e);
             }
         },
+
         p_e = proxy_server => {
             if let Err(e) = p_e {
                 tracing::error!("proxy server error: {}", e);
             }
         },
+
+        api_e = cpm_api_server => {
+            if let Err(e) = api_e {
+                tracing::error!("proxy server error: {}", e);
+            }
+        }
     }
 }
