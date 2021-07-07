@@ -1,37 +1,68 @@
 
-use std::{io,net::SocketAddr,path::PathBuf};
+use std::{io,io::Write,fs::File,net::SocketAddr,path::{Path,PathBuf}};
 use tokio::net::{TcpStream,TcpListener};
 
 use common::{
     TcpSender, TcpReceiver,
-    cpm_api::{Request,Response,Overlapped},
+    cpm_api::{PackageId,Request,Response,Overlapped,SendMessage,RecvMessage},
 };
+
+fn check_missing(cache_path: &Path, packages: &mut Vec<PackageId>) {
+    packages.retain(|id| {
+        let mut cache_path : PathBuf = cache_path.into();
+        cache_path.push(&id.name);
+        cache_path.push(&id.version);
+        !cache_path.exists()
+    });
+}
+
+async fn upload_crate(mut cache_path: PathBuf, package: PackageId, file_bytes: Vec<u8>) -> io::Result<()> {
+
+    tracing::trace!("adding new crate version {:?}, {} bytes", package, file_bytes.len());
+
+    cache_path.push(&package.name);
+
+    if !cache_path.exists() {
+        std::fs::create_dir(&cache_path)?;
+    }
+
+    cache_path.push(&package.version);
+
+    if !cache_path.exists() {
+        let mut file = File::create(cache_path)?;
+        file.write_all(&file_bytes)?;
+
+        tracing::info!("added new crate version {}, {} bytes", package, file_bytes.len());
+    } else {
+        tracing::warn!("ignoring attempted overwrite of {}", package);
+    }
+
+    Ok(())
+}
 
 pub async fn handle_connection(stream: TcpStream, cache_path: PathBuf) -> io::Result<()>
 {
     let (rx_stream, tx_stream) = stream.into_split();
 
-    let mut rx_stream = TcpReceiver::<Overlapped<Request>>::from(rx_stream);
-    let mut tx_stream = TcpSender::<Overlapped<Response>>::from(tx_stream);
+    let mut rx_stream = TcpReceiver::<SendMessage>::from(rx_stream);
+    let mut tx_stream = TcpSender::<RecvMessage>::from(tx_stream);
 
     while let Some(Overlapped::<Request>{sequence, payload: request}) = rx_stream.next().await? {
         match request {
+
             Request::CheckMissing(mut packages) => {
+                check_missing(&cache_path, &mut packages);
+                tx_stream.send(&Overlapped{sequence, payload:Ok(Response::CheckMissing(packages))}).await?;
+            },
 
-                packages.retain(|id| {
-
-                    let mut cache_path = PathBuf::from(&cache_path);
-
-                    cache_path.push(&id.name);
-                    cache_path.push(&id.version);
-
-                    !cache_path.exists()
-
-                });
-
-                tx_stream.send(&Overlapped{sequence, payload:Response::CheckMissing(packages)}).await?;
-
+            Request::UploadCrate{package,content} => {
+                upload_crate(cache_path.clone(), package, content).await?;
+                tx_stream.send(&Overlapped{sequence, payload:Ok(Response::UploadCrate)}).await?;
             }
+
+            //_ => {
+            //    tx_stream.send(&Overlapped{sequence, payload:Err(cpm_api::Error::NotImplemented)}).await?;
+            //},
         }
     }
 

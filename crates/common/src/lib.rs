@@ -115,14 +115,14 @@ mod tcp_sender
         pub async fn send(&mut self, value: &T) -> Result<(), io::Error> {
             let bytes = &serialize(value)?;
             let len = bytes.len ();
-            assert!(len < (u16::MAX as usize));
-            self.socket.write_u16(len as u16).await?;
+            assert!(len < (u32::MAX as usize));
+            self.socket.write_u32(len as u32).await?;
             self.socket.write_all(&bytes).await?;
             Ok(())
         }
 
         pub async fn close(mut self) -> Result<(),io::Error> {
-            self.socket.write_u16(0).await?;
+            self.socket.write_u32(0).await?;
             self.socket.shutdown().await?;
             Ok(())
         }
@@ -161,7 +161,7 @@ mod tcp_receiver
     impl<T:DeserializeOwned> TcpReceiver<T> {
         pub async fn next(&mut self) -> Result<Option<T>,io::Error> {
             let mut bytes = Vec::<u8>::new();
-            let len = self.socket.read_u16().await?;
+            let len = self.socket.read_u32().await?;
             if len > 0 {
                 bytes.resize(len as usize, 0);
                 self.socket.read_exact(&mut bytes).await?;

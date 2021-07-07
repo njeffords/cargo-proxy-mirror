@@ -29,7 +29,7 @@ impl<Req,Rsp> SyncTcpEndPoint<Req,Rsp> where Req:Serialize,Rsp:DeserializeOwned 
     }
 
     pub fn close(mut self) -> io::Result<()> {
-        self.stream.write_u16::<be>(0 as u16)?;
+        self.stream.write_u32::<be>(0 as u32)?;
         self.stream.flush()?;
         self.stream.shutdown(Shutdown::Both)?;
         Ok(())
@@ -40,9 +40,9 @@ impl<Req,Rsp> SyncTcpEndPoint<Req,Rsp> where Req:Serialize,Rsp:DeserializeOwned 
         let bytes = &serialize(request)?;
         let len = bytes.len ();
 
-        assert!(len < (u16::MAX as usize));
+        assert!(len < (u32::MAX as usize));
 
-        self.stream.write_u16::<be>(len as u16)?;
+        self.stream.write_u32::<be>(len as u32)?;
         self.stream.write_all(&bytes)?;
 
         Ok(())
@@ -51,7 +51,7 @@ impl<Req,Rsp> SyncTcpEndPoint<Req,Rsp> where Req:Serialize,Rsp:DeserializeOwned 
     pub fn recv_response(&mut self) -> io::Result<Rsp> {
 
         let mut bytes = Vec::<u8>::new();
-        let len = self.stream.read_u16::<be>()?;
+        let len = self.stream.read_u32::<be>()?;
 
         bytes.resize(len as usize, 0);
         self.stream.read_exact(&mut bytes)?;

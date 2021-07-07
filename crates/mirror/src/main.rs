@@ -168,7 +168,7 @@ async fn main() {
 
     let cpm_api_server = cli_server::service(
         cpm_api_end_point,
-        std::env::var("CPM_CRATE_CACHE").unwrap().into(),
+        std::env::var("CPM_CRATE_CACHE").expect("a value for 'CPM_CRATE_CACHE'").into(),
     );
 
     tracing::info!("accepting HTTP connections on: {}", http_end_point);
