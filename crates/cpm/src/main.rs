@@ -1,12 +1,15 @@
-use std::{fs::File, io::{self, Read}, net::{SocketAddr,TcpStream}, path::PathBuf};
+//! Cargo proxy mirror command line tool
+//!
+//! Provides the ability to interact with the cache-mirror on protected network.
+
+use std::{fs::File, io::{self, Read}, net::SocketAddr, path::PathBuf};
 
 use structopt::StructOpt;
 use displaydoc::Display;
 use thiserror::Error;
 
 use common::{
-    cpm_api::{self,PackageId,Request,Response,Overlapped,SendMessage,RecvMessage},
-    SyncTcpEndPoint,
+    cpm_api::{self,PackageId},
 };
 
 /// Manage acquiring missing crates from a disconnected network partition.
@@ -22,6 +25,7 @@ struct Options {
     command: Command
 }
 
+/// The possible sub-commands for this tool.
 #[derive(StructOpt)]
 enum Command {
     /// Record missing packages when comparing requirements from lock file with
@@ -45,6 +49,7 @@ enum Command {
     }
 }
 
+/// An error that can occur while exectuting a command.
 #[derive(Error, Display, Debug)]
 enum Error {
     /// An unexpected response was received from the mirror.
@@ -65,84 +70,17 @@ enum Error {
     BadTarFileName,
 }
 
-
-type EndPoint = SyncTcpEndPoint<SendMessage, RecvMessage>;
-struct CpmApiClient(EndPoint,u32);
-
-impl CpmApiClient {
-    pub fn new(addr: SocketAddr) -> io::Result<Self> {
-        Ok(Self(EndPoint::from(TcpStream::connect(addr)?),0))
-    }
-
-    pub fn upload(&mut self, name: impl Into<String>, version: impl Into<String>, file_bytes: Vec<u8>) -> Result<()> {
-
-        let response = self.transact(Request::UploadCrate{
-            package: PackageId{name: name.into(), version: version.into()},
-            content: file_bytes,
-        })?;
-
-        if let Response::UploadCrate = response {
-            Ok(())
-        } else {
-            Err(Error::UnexpectedResponse)
-        }
-    }
-
-    fn close(self) -> Result<()> {
-        Ok(self.0.close()?)
-    }
-
-    fn transact(&mut self, request: Request) -> Result<Response> {
-        self.1 += 1;
-        let sequence = self.1;
-        let payload = request;
-        let response = self.0.transact(&Overlapped{sequence, payload})?;
-        if response.sequence != sequence {
-            Err(Error::SequenceError)?;
-        }
-        Ok(response.payload?)
-    }
-}
-
-/// Cargo.lock format
-mod cargo_lock {
-
-    use std::{
-        io,
-        fs::File,
-        path::Path,
-        io::prelude::*,
-    };
-
-    use serde::Deserialize;
-
-    #[derive(Deserialize,Debug)]
-    pub struct LockFile {
-        pub version: usize,
-        pub package: Vec<Package>
-    }
-
-    #[derive(Deserialize,Debug)]
-    pub struct Package{
-        pub name: String,
-        pub version: String,
-        pub source: Option<String>,
-        pub checksum: Option<String>,
-        pub dependancies: Option<Vec<String>>,
-    }
-
-    pub fn load(path: impl AsRef<Path>) -> io::Result<LockFile> {
-
-        let mut content = String::new();
-
-        File::open(path.as_ref())?.read_to_string(&mut content)?;
-
-        toml::from_str(&content).map_err(|err|io::Error::new(io::ErrorKind::InvalidData,err))
-    }
-}
-
 type Result<T> = std::result::Result<T,Error>;
 
+/// Cargo.lock format
+mod cargo_lock;
+
+/// Interface to proxy-mirror service
+mod cpm_api_client;
+
+use cpm_api_client::CpmApiClient;
+
+/// execute the `check` sub-command
 fn check(server_end_point: SocketAddr, lock_file: PathBuf) -> Result<()> {
 
     eprintln!("checking lockfile: {:?}", lock_file);
@@ -175,16 +113,11 @@ fn check(server_end_point: SocketAddr, lock_file: PathBuf) -> Result<()> {
         }
     }
 
-    let mut end_point = EndPoint::from(TcpStream::connect(server_end_point)?);
+    let mut client = CpmApiClient::new(server_end_point)?;
 
-    let response = end_point.transact(&Overlapped{sequence: 1, payload: Request::CheckMissing(packages)})?;
+    let packages = client.check(packages)?;
 
-    end_point.close()?;
-
-    let packages = match response.payload? {
-        Response::CheckMissing(packages) => packages,
-        _ => Err(Error::UnexpectedResponse)?,
-    };
+    client.close()?;
 
     for package in packages {
         println!("{}/{}", package.name, package.version);
@@ -193,7 +126,8 @@ fn check(server_end_point: SocketAddr, lock_file: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn upload_tarball(server_end_point: SocketAddr, tarball: PathBuf) -> Result<()> {
+/// execute the `upload` sub-command
+fn upload(server_end_point: SocketAddr, tarball: PathBuf) -> Result<()> {
 
     let tarball = File::open(tarball)?;
 
@@ -233,7 +167,7 @@ fn main() {
         Check{lock_file} => if let Err(err) = check(options.server_end_point, lock_file) {
             eprintln!("error occured: {}", err);
         },
-        Upload{tarball} => if let Err(err) = upload_tarball(options.server_end_point, tarball) {
+        Upload{tarball} => if let Err(err) = upload(options.server_end_point, tarball) {
             eprintln!("error occured: {}", err);
         }
     }

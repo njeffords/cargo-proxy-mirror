@@ -22,6 +22,7 @@ struct Opts {
 
 }
 
+/// An error that could occur while attempting execute the command.
 #[derive(Error,Display,Debug)]
 enum Error {
 
@@ -40,6 +41,10 @@ enum Error {
 
 use Error::{IllegalCrateListFormat,DownloadError};
 
+/// Execute the command
+///
+/// Takes a filename containing the download manifest and a filename indicating
+/// where to place the resulting archive.
 fn execute(input: PathBuf, output: PathBuf) -> Result<(),Error> {
 
     let input = {

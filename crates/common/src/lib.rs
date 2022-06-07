@@ -1,8 +1,10 @@
 
+/// PDU for mirror -> proxy communications
 pub mod up_stream
 {
     use serde::{Serialize, Deserialize};
 
+    /// Request package download
     #[derive(Serialize, Deserialize, Debug)]
     pub struct Request {
         pub session_id: u32,
@@ -11,26 +13,33 @@ pub mod up_stream
     }
 }
 
+/// PDU for proxy -> mirror communications
 pub mod down_stream
 {
     use serde::{Serialize, Deserialize};
     use std::fmt;
 
+    /// Important headers received when downloading a package.
     #[derive(Serialize, Deserialize, Debug)]
     pub struct Headers {
         pub content_type: String,
         pub content_length: usize,
     }
 
+    /// Error that can occur while attempting to download a package.
     #[derive(Serialize, Deserialize, Debug)]
     pub enum Error {
         Unspecified,
         Generic(String)
     }
 
+    /// A buffer containing a fragment of a downloading package.
     #[derive(Serialize, Deserialize)]
     pub struct Buffer(Vec<u8>);
 
+    /// An fragment of the package download process.
+    ///
+    /// A state machine, `Init -> Chunk* -> Complete`
     #[derive(Serialize, Deserialize, Debug)]
     pub enum Opcode {
         Init(Headers),
@@ -38,6 +47,8 @@ pub mod down_stream
         Complete(Result<(),Error>),
     }
 
+    /// A message received from the proxy containing an opcode assocated with a
+    /// particular session.
     #[derive(Serialize, Deserialize, Debug)]
     pub struct Message {
         pub session_id: u32,
