@@ -16,7 +16,7 @@ It consists of a pair of services. The proxy service sits on a machine with acce
 
 The proxy is intentionally limited in functionality to minimize security concerns. It initiates a connection to the mirror service so that it does not need to accept any arbitrary connections from unknown or untrusted clients. It only supports fielding requests for packages by accepting a package name and version via a custom RPC protocol which helps prevent misuse. It only attempts connecting to its configured mirror server which makes it difficult to intercept. By being implemented in only safe rust and not allowing any incoming connections, its attack surface is significantly reduced.
 
-## Usage
+## Configuration
 
 Cargo requires access to a git repository with an index of all available packages. Currently, the copy of the cargo package index must be kept up to date manually. Cargo uses a URL in the git index repository to form its download requests. The mirrored repository must have its `config.json` file updated to point at the mirror server.
 
@@ -89,5 +89,28 @@ C:\cpm> set RUST_LOG=info
 C:\cpm> proxy
 ```
 
+## "Manual Mode"
 
+With the proxy configured, packages are downloaded automatically, and cached in the mirror. If the proxy is not available, the mirror's cache can be updated manually using a pair of command line tools `cpm` and `dl-crates`. The `cpm` tool is used on a development machine on the protected network to determine what packages are missing, and then to push those packages once acquired with the `dl-crates` tool into the mirror's cache.
 
+If a package is missing from the cache, `cargo` will report an error about the inability to download the package from the mirror. When this occurs, run the following command to produce a list of missing packages:
+
+```
+C:\project> cpm check > crates.list
+```
+
+Transport the `crates.list` file to a network with internet access and run the following command to download the missing packages:
+
+```
+C:\> dl-crates crates.list crates.tar
+```
+
+Transport `crates.tar` back to the original machine on the protected network and use the following command to upload the missing packages into the mirror's cache.
+
+```
+C:\project> cpm upload crates.tar
+```
+
+At this point, the cargo command can be retries and should succeed.
+
+**NOTE:** This method only works for project dependencies as it scans the projects lock file and compare that with what is available in the mirror. This means that `cargo install <package>` won't work in "manual mode".
