@@ -115,6 +115,10 @@ mod tcp_sender
 
     use super::api_serde::serialize;
 
+    /// Wraps an [OwnedWriteHalf] to allow sending a sequence of typed values.
+    ///
+    /// Encodes values using [bincode] and asynchronously sends the over a TPC
+    /// stream with a simple framing protocol.
     pub struct TcpSender<T:Serialize> {
         socket: OwnedWriteHalf,
         _value: std::marker::PhantomData<T>
@@ -164,6 +168,10 @@ mod tcp_receiver
 
     use super::api_serde::deserialize;
 
+    /// Wraps an [OwnedReadHalf] to allow receiving a sequence of typed values.
+    ///
+    /// Asynchronously receives value with a simple framing protocol from a TCP
+    /// stream and decodes the with [bincode].
     pub struct TcpReceiver<T:DeserializeOwned> {
         socket: OwnedReadHalf,
         _value: std::marker::PhantomData<T>

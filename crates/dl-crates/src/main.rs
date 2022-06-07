@@ -1,3 +1,9 @@
+//! Command line tool to download missing crates received from the `cpm` tool.
+//!
+//! Takes a manifest received from the `cpm` tool, downloads them and places
+//! them into an archive that can be used to populate the mirrors cache via the
+//! `cpm` tool.
+
 
 use std::{fs::File, io::{self, Read,Seek,SeekFrom::Start}, path::PathBuf};
 use structopt::StructOpt;

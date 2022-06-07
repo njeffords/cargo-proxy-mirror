@@ -1,3 +1,9 @@
+//! crates.io caching mirror
+//!
+//! Serves crates from a cache, downloading missing crates on demand if
+//! connected to a proxy. Can also be interrogated for missing packages and
+//! updated manually via the accompanying `cpm` command line tool.
+
 use std::{
     sync::Arc,
     str::FromStr,
@@ -22,6 +28,7 @@ use futures::StreamExt;
 use thiserror::Error;
 use displaydoc::Display;
 
+/// server for command line access via the `cpm` tool
 mod cli_server;
 mod proxy_connection;
 
@@ -29,6 +36,7 @@ use proxy_connection::ProxyConnection;
 
 type ProxyRef = Arc<ProxyConnection>;
 
+/// Parse a download request URL breaking into its components.
 fn parse_download_request(uri: &Uri) -> Result<(&str, &str), u16> {
     if let Some(pnq) = uri.path_and_query() {
         if pnq.query().is_none() {
@@ -54,6 +62,7 @@ fn parse_download_request(uri: &Uri) -> Result<(&str, &str), u16> {
     }
 }
 
+/// generate an error response to an HTTP request.
 fn error_response(code: u16) -> Response<Body> {
     tracing::warn!("sending error code: {}", code);
     Response::builder()
@@ -62,6 +71,7 @@ fn error_response(code: u16) -> Response<Body> {
         .unwrap()
 }
 
+/// Respond to a download request fulfilled by the cache.
 async fn download_cached(req: &Request<Body>, cache_path: PathBuf) -> Result<Response<Body>,u16> {
     let file = tokio::fs::File::open(cache_path).await.map_err(|_|500u16)?;
     let metadata = file.metadata().await.map_err(|_|500u16)?;
@@ -71,12 +81,16 @@ async fn download_cached(req: &Request<Body>, cache_path: PathBuf) -> Result<Res
         .map_err(|_|500u16)
 }
 
+/// An error the a occur while downloading from the proxy.
 #[derive(Error,Display,Debug)]
 enum StreamError{
-    /// an unexpected error occured
+    /// an unexpected error occurred
     Unexpected
 }
 
+/// Respond to a download request fulfilled by the cache.
+///
+/// Optionally stashes the package in the cache.
 async fn proxy_download(proxy: ProxyRef, package: &str, version: &str, _cache_path: Option<PathBuf>) -> Result<Response<Body>,u16> {
 
     let mut stream = proxy.begin_download(package.into(), version.into()).await.map_err(|_|404u16)?;
@@ -106,6 +120,10 @@ async fn proxy_download(proxy: ProxyRef, package: &str, version: &str, _cache_pa
     }
 }
 
+/// Respond to a download request fulfilled by the proxy or the cache.
+///
+/// Will use the cache if the package is present, otherwise it will use the
+/// proxy if connected, otherwise it will fail.
 async fn download(proxy: ProxyRef, req: &Request<Body>, package: &str, version: &str) -> Result<Response<Body>,u16> {
 
     if let Ok(cache_path) = env::var("CPM_CRATE_CACHE") {
@@ -126,6 +144,7 @@ async fn download(proxy: ProxyRef, req: &Request<Body>, package: &str, version: 
     }
 }
 
+/// Process incoming request before handing off to [download] if appropriate.
 async fn handler(proxy: ProxyRef, req: Request<Body>) -> Result<Response<Body>, Infallible> {
     tracing::trace!("entering handler...");
     if req.method() == Method::GET {

@@ -1,3 +1,8 @@
+//! server for connection from proxy
+//!
+//! The proxy connection supports multiple concurrent downloads to be
+//! in-progress. This accomplished by sending a request with a unique session
+//! id. The proxy then sends a series of messages tagged with the session id.
 
 use std::{
     //path::PathBuf,
@@ -16,6 +21,7 @@ use tokio::net::TcpListener;
 
 use common::{up_stream, down_stream, TcpSender, TcpReceiver};
 
+/// An error that can occur on the link while the proxy is connected.
 #[derive(Error,Display,Debug)]
 pub enum Error {
     /// No uplink was available to request download.
@@ -28,6 +34,7 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T,Error>;
 
+/// The current state of the proxy connection.
 #[derive(Default)]
 pub struct State{
     last_mux: u32,
@@ -35,9 +42,12 @@ pub struct State{
     sessions: HashMap<u32,mpsc::Sender<down_stream::Opcode>>,
 }
 
+/// Represents a potential connection from the proxy.
 pub struct ProxyConnection(Mutex<State>);
 
 impl State {
+
+    /// begin tracking a new download session from the proxy
     fn add_session(&mut self, tx: mpsc::Sender<down_stream::Opcode>) -> u32 {
         loop {
             use std::collections::hash_map::Entry::*;
@@ -53,6 +63,8 @@ impl State {
         }
     }
 
+    /// disassociate with the currently connected proxy and associate with the
+    /// newly provided one
     pub fn reset_uplink_to(&mut self, stream: TcpSender<up_stream::Request>) -> Result<()> {
         if self.uplink.is_some() {
             let sessions = std::mem::replace(&mut self.sessions, Default::default());
@@ -86,10 +98,12 @@ impl State {
 
 impl ProxyConnection {
 
+    /// create a new proxy connection tracker
     pub fn new() -> Arc<Self> {
         Arc::new(Self(Mutex::new(Default::default())))
     }
 
+    /// initiate a download from the proxy
     pub async fn begin_download(self: &Arc<Self>, package: String, version: String) -> Result<mpsc::Receiver<down_stream::Opcode>> {
         let (mut uplink, session_id, rx) = {
             let mut state = self.0.lock().unwrap();
@@ -106,7 +120,7 @@ impl ProxyConnection {
         Ok(rx)
     }
 
-
+    /// process incoming download message from the proxy
     async fn process_receives(self: &Arc<Self>, mut stream: TcpReceiver<down_stream::Message>) -> Result<()> {
 
         while let Some(down_stream::Message{session_id, opcode}) = stream.next().await? {
@@ -130,6 +144,9 @@ impl ProxyConnection {
         Ok(())
     }
 
+    /// listen for connections from the proxy, replaces the existing one with new ones.
+    ///
+    /// All received messages from the proxy are handled by the [Self::process_receives] function
     pub async fn serve(self: Arc<Self>)-> Result<()> {
 
         let local_end_point = std::env::var("CPM_MIRROR_PROXY_LOCAL_END_POINT").expect("value for `CPM_MIRROR_PROXY_LOCAL_END_POINT`");

@@ -7,6 +7,7 @@ use common::{
     cpm_api::{PackageId,Request,Response,Overlapped,SendMessage,RecvMessage},
 };
 
+/// checks the provided package list for missing entries in the cache
 fn check_missing(cache_path: &Path, packages: &mut Vec<PackageId>) {
     packages.retain(|id| {
         let mut cache_path : PathBuf = cache_path.into();
@@ -16,6 +17,7 @@ fn check_missing(cache_path: &Path, packages: &mut Vec<PackageId>) {
     });
 }
 
+/// place the provided package into the cache
 async fn upload_crate(mut cache_path: PathBuf, package: PackageId, file_bytes: Vec<u8>) -> io::Result<()> {
 
     tracing::trace!("adding new crate version {:?}, {} bytes", package, file_bytes.len());
@@ -40,6 +42,7 @@ async fn upload_crate(mut cache_path: PathBuf, package: PackageId, file_bytes: V
     Ok(())
 }
 
+/// process commands from an accepted TCP connection
 pub async fn handle_connection(stream: TcpStream, cache_path: PathBuf) -> io::Result<()>
 {
     let (rx_stream, tx_stream) = stream.into_split();
@@ -69,6 +72,7 @@ pub async fn handle_connection(stream: TcpStream, cache_path: PathBuf) -> io::Re
     Ok(())
 }
 
+/// listen on a TCP port, handling connection via [handle_connection]
 pub async fn service(local_end_point: SocketAddr, cache_path: PathBuf) -> io::Result<()> {
     let listener = TcpListener::bind(local_end_point).await?;
     loop {
