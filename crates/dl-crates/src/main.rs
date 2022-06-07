@@ -6,6 +6,7 @@ use tempfile::tempfile;
 use thiserror::Error;
 use displaydoc::Display;
 
+/// Download a set crates into an archive.
 #[derive(StructOpt)]
 struct Opts {
 
@@ -14,7 +15,8 @@ struct Opts {
     #[structopt(parse(from_os_str))]
     input: PathBuf,
 
-    /// Archive containing downloaded crates.
+    /// Archive containing downloaded crates. Passed back to the `cpm upload`
+    /// command.
     #[structopt(parse(from_os_str))]
     output: PathBuf,
 
