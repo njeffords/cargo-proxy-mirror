@@ -31,8 +31,10 @@ use displaydoc::Display;
 
 use common::{TcpSender,TcpReceiver,up_stream,down_stream};
 
+use serde::{Serialize,Deserialize};
 use structopt::StructOpt;
-#[derive(StructOpt,Debug)]
+
+#[derive(StructOpt,Serialize,Deserialize,Debug)]
 struct ServiceConfig {
     /// The address and port of the mirror service.
     #[structopt(short, long, env = "CPM_MIRROR_REMOTE_END_POINT")]
@@ -246,6 +248,54 @@ fn run_forever(config: ServiceConfig) {
         .block_on(run_for_a_while(config.mirror_end_point, config.crates_io_base_url, running))
 }
 
+#[cfg(windows)]
+mod winsvc_glue {
+
+    use tokio::sync::watch::Receiver;
+    use winsvc::{
+        std_cli::{Command,ServiceDetail,LoggingConfig},
+        async_service_main::InitializationToken,
+    };
+    use super::{ServiceConfig,run_forever,run_for_a_while};
+
+    struct Service;
+
+    async fn service_main(
+        config: ServiceConfig,
+        init: InitializationToken,
+        running: Receiver<bool>
+    ) {
+        init.complete();
+        run_for_a_while(config.mirror_end_point, config.crates_io_base_url, running).await
+    }
+
+    impl ServiceDetail for Service {
+
+        const SERVICE_IDENTIFIER: &'static str = "cpm-proxy";
+        const SERVICE_DISPLAY_NAME: &'static str = "Rust Cargo Crate Proxy";
+
+        type Config = ServiceConfig;
+
+        fn run_local(config: Self::Config) {
+            run_forever(config);
+        }
+
+        fn run_as_service(log_config: LoggingConfig) {
+            log_config.init();
+            std::panic::set_hook(Box::new(|panic: &std::panic::PanicInfo<'_>| -> () {
+                tracing::error!("panic: {}", panic);
+            }));
+            winsvc::async_service_dispatcher!{ "cpm-proxy" => service_main }
+        }
+    }
+
+    pub fn main() { Command::<Service>::execute() }
+}
+
+#[cfg(windows)]
+fn main() { winsvc_glue::main() }
+
+#[cfg(not(windows))]
 fn main() {
     tracing_subscriber::fmt::init();
     run_forever(ServiceConfig::from_args());

@@ -7,6 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+serde = "*"
 hyper = { version="^0.14.9", features=["full"] }
 tokio = { version="1",       features=["full"] }
 hyper-tls = "0.5.0"
@@ -18,3 +19,8 @@ thiserror = "1.0.25"
 displaydoc = "0.2.1"
 
 common= { path="../common" }
+
+[target.'cfg(windows)'.dependencies.winsvc]
+git="https://github.com/njeffords/winsvc.git"
+tag="v0.1.1"
+features=[ "async_main", "serde_config", "std_cli", "tracing-subscriber" ]
