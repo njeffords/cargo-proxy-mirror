@@ -31,7 +31,7 @@ In the following example, `{mirror-end-point}` must be replaced (including the p
 
 It can be served easily by the `git daemon` command on the mirror server. (see its documentation  for the specifics of hosting)
 
-```
+```cmd
 C:\Projects\n8ware\rust\cargo-proxy-mirror\test>dir
  Volume in drive C has no label.
 
@@ -61,30 +61,28 @@ replace-with = "mirror"
 
 The mirror service running on the protected network requires the following environmental variables to be configured:
 
-```
+```cmd
 set CPM_HTTP_LOCAL_END_POINT=<address and port to accept http connections on: `0.0.0.0:3000`>
 set CPM_PROXY_LOCAL_END_POINT=<address and port to accept proxy connections on: `0.0.0.0:8080`>
 ```
 
 Then:
 
-```
+```cmd
 C:\cpm> set RUST_LOG=info
 C:\cpm> mirror
 ```
 
-
-
 The proxy service running on the proxy machine requires the following environmental variables to be configured:
 
-```
+```cmd
 set CPM_MIRROR_REMOTE_END_POINT=<ip or host name and port of mirror server: e.i. `1.2.3.4:8080`>
 set CPM_CRATES_IO_BASE_URL=<base URL of crates server `https://crates.io/api/v1/crates`>
 ```
 
 Then:
 
-```
+```cmd
 C:\cpm> set RUST_LOG=info
 C:\cpm> proxy
 ```
@@ -93,24 +91,26 @@ C:\cpm> proxy
 
 With the proxy configured, packages are downloaded automatically, and cached in the mirror. If the proxy is not available, the mirror's cache can be updated manually using a pair of command line tools `cpm` and `dl-crates`. The `cpm` tool is used on a development machine on the protected network to determine what packages are missing, and then to push those packages once acquired with the `dl-crates` tool into the mirror's cache.
 
+**NOTE:** This method only works for project dependencies as it scans the projects lock file and compare that with what is available in the mirror. This means that `cargo install <package>` won't work in "manual mode".
+
+### Example
+
 If a package is missing from the cache, `cargo` will report an error about the inability to download the package from the mirror. When this occurs, run the following command to produce a list of missing packages:
 
-```
+```cmd
 C:\project> cpm check > crates.list
 ```
 
 Transport the `crates.list` file to a network with internet access and run the following command to download the missing packages:
 
-```
+```cmd
 C:\> dl-crates crates.list crates.tar
 ```
 
 Transport `crates.tar` back to the original machine on the protected network and use the following command to upload the missing packages into the mirror's cache.
 
-```
+```cmd
 C:\project> cpm upload crates.tar
 ```
 
 At this point, the cargo command can be retries and should succeed.
-
-**NOTE:** This method only works for project dependencies as it scans the projects lock file and compare that with what is available in the mirror. This means that `cargo install <package>` won't work in "manual mode".
